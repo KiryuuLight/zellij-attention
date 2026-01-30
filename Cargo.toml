@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 zellij-tile = "0.43.1"
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", features = ["serde"] }
 
 [profile.release]
 opt-level = "z"
