@@ -1,0 +1,16 @@
+# Planning docs (local only)
+.planning/
+
+# Rust/Cargo
+target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
