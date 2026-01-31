@@ -21,6 +21,8 @@ pub struct PersistedState {
 
 const STATE_PATH: &str = "/data/state.bin";
 const STATE_TMP_PATH: &str = "/data/state.bin.tmp";
+// Write to /host which maps to cwd where zellij started
+const STATUS_PATH: &str = "/host/.zellij-attention-status";
 
 /// Save state to persistent storage.
 ///
@@ -30,6 +32,13 @@ pub fn save_state(state: &PersistedState) -> Result<(), Box<dyn std::error::Erro
     std::fs::write(STATE_TMP_PATH, &encoded)?;
     std::fs::rename(STATE_TMP_PATH, STATE_PATH)?;
     Ok(())
+}
+
+/// Write status text to file for zjstatus command widget to read.
+///
+/// This is the communication channel to zjstatus - it polls this file.
+pub fn write_status(status: &str) -> Result<(), std::io::Error> {
+    std::fs::write(STATUS_PATH, status)
 }
 
 /// Load state from persistent storage.

@@ -2,17 +2,9 @@ mod state;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use zellij_tile::prelude::*;
-use zellij_tile::shim::{pipe_message_to_plugin, unblock_cli_pipe_input};
+use zellij_tile::shim::unblock_cli_pipe_input;
 
-use crate::state::{load_state, save_state, NotificationType, PersistedState};
-
-/// JSON payload structure for pipe messages.
-/// External processes send: `zellij pipe --name notification -- '{"event_type":"waiting","pane_id":42}'`
-#[derive(Debug, serde::Deserialize)]
-struct PipeEvent {
-    event_type: String,
-    pane_id: u32,
-}
+use crate::state::{load_state, save_state, write_status, NotificationType, PersistedState};
 
 struct State {
     permissions_granted: bool,
@@ -183,19 +175,29 @@ impl State {
             parts.push(format!("* {}", tabs));
         }
 
-        parts.join(" ")
+        if parts.is_empty() {
+            "#[fg=green]✓".to_string()
+        } else {
+            format!("#[fg=red,bold]{}", parts.join(" "))
+        }
     }
 
-    /// Sends the current notification state to zjstatus via pipe.
+    /// Writes the current notification state to a file for zjstatus to read.
+    /// zjstatus polls this file using a command widget.
     fn send_to_zjstatus(&self) {
         let summary = self.format_notification_summary();
-        let message_name = format!("zjstatus::pipe::claude::{}", summary);
+
+        // Write status to file for zjstatus command widget
+        if let Err(e) = write_status(&summary) {
+            eprintln!("zellij-attention: Failed to write status file: {}", e);
+        }
 
         #[cfg(debug_assertions)]
-        eprintln!("zellij-attention: Sending to zjstatus: {}", message_name);
-
-        pipe_message_to_plugin(
-            MessageToPlugin::new(&message_name).with_plugin_url(&self.zjstatus_url),
+        eprintln!(
+            "zellij-attention: State update: '{}' (tabs={}, notifications={:?})\n",
+            summary,
+            self.tabs.len(),
+            self.notification_state
         );
     }
 }
@@ -207,6 +209,8 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::MessageAndLaunchOtherPlugins,
+            PermissionType::ReadCliPipes,
+            PermissionType::FullHdAccess,
         ]);
 
         // Subscribe to events (no Mouse needed anymore)
@@ -278,44 +282,42 @@ impl ZellijPlugin for State {
             pipe_message.name, pipe_message.payload, pipe_message.args
         );
 
-        // Only handle messages to "notification" pipe, silently ignore others
-        if pipe_message.name != "notification" {
-            return false;
-        }
-
-        // Parse event_type and pane_id from either payload (JSON) or args
-        let (event_type, pane_id) = if let Some(payload) = &pipe_message.payload {
-            // JSON payload format: {"event_type":"waiting","pane_id":0}
-            match serde_json::from_str::<PipeEvent>(payload) {
-                Ok(e) => (e.event_type, e.pane_id),
-                Err(e) => {
-                    eprintln!("zellij-attention: Failed to parse JSON: {}\n", e);
-                    return false;
-                }
+        // Try to parse message from name first, then fall back to payload
+        // When using `zellij pipe "msg"`, zellij puts a UUID as name and msg in payload
+        // When using `zellij pipe --name "msg"`, the msg is in name
+        let message = if pipe_message.name.starts_with("zellij-attention::") {
+            pipe_message.name.clone()
+        } else if let Some(ref payload) = pipe_message.payload {
+            if payload.starts_with("zellij-attention::") {
+                payload.clone()
+            } else {
+                // Not for us
+                return false;
             }
         } else {
-            // Args format: --args "event_type=waiting,pane_id=0"
-            let event_type = match pipe_message.args.get("event_type") {
-                Some(t) => t.clone(),
-                None => {
-                    eprintln!("zellij-attention: Missing event_type in args\n");
-                    return false;
-                }
-            };
-            let pane_id: u32 = match pipe_message.args.get("pane_id") {
-                Some(id) => match id.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        eprintln!("zellij-attention: Invalid pane_id: {}\n", id);
-                        return false;
-                    }
-                },
-                None => {
-                    eprintln!("zellij-attention: Missing pane_id in args\n");
+            // Not for us
+            return false;
+        };
+
+        // Parse broadcast pipe format: "zellij-attention::EVENT_TYPE::PANE_ID"
+        let parts: Vec<&str> = message.split("::").collect();
+
+        // Parse event_type and pane_id
+        let (event_type, pane_id) = if parts.len() >= 3 {
+            let event_type = parts[1].to_string();
+            let pane_id: u32 = match parts[2].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    eprintln!("zellij-attention: Invalid pane_id: {}\n", parts[2]);
+                    unblock_cli_pipe_input(&pipe_message.name);
                     return false;
                 }
             };
             (event_type, pane_id)
+        } else {
+            eprintln!("zellij-attention: Invalid format. Use: zellij-attention::EVENT_TYPE::PANE_ID\n");
+            unblock_cli_pipe_input(&pipe_message.name);
+            return false;
         };
 
         // Normalize event_type to lowercase and match
