@@ -64,6 +64,35 @@ impl State {
         }
     }
 
+    /// Determines the notification state for a tab by checking all panes in that tab.
+    /// Returns the highest priority notification: Waiting > Completed > None.
+    /// Priority: Waiting is attention-seeking, so it takes precedence.
+    fn get_tab_notification_state(&self, tab_position: usize) -> Option<NotificationType> {
+        // Get panes for this tab position
+        let panes = self.panes.panes.get(&tab_position)?;
+
+        // Check if any pane in this tab has notifications
+        // Priority: Waiting > Completed (attention-seeking state first)
+        let mut has_completed = false;
+
+        for pane in panes {
+            if let Some(notifications) = self.notification_state.get(&pane.id) {
+                if notifications.contains(&NotificationType::Waiting) {
+                    return Some(NotificationType::Waiting);
+                }
+                if notifications.contains(&NotificationType::Completed) {
+                    has_completed = true;
+                }
+            }
+        }
+
+        if has_completed {
+            Some(NotificationType::Completed)
+        } else {
+            None
+        }
+    }
+
     /// Removes notification entries for panes that no longer exist.
     /// Called on every PaneUpdate to handle pane closures.
     fn cleanup_stale_panes(&mut self) {
