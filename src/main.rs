@@ -1,6 +1,7 @@
 mod state;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
 use zellij_tile::prelude::*;
 
 use crate::state::{load_state, save_state, NotificationType, PersistedState};
@@ -8,16 +9,16 @@ use crate::state::{load_state, save_state, NotificationType, PersistedState};
 /// Converts a PaletteColor to ANSI foreground color escape sequence.
 fn palette_color_to_ansi_fg(color: PaletteColor) -> String {
     match color {
-        PaletteColor::Rgb((r, g, b)) => format!("\u{1b}[38;2;{};{};{}m", r, g, b),
-        PaletteColor::EightBit(idx) => format!("\u{1b}[38;5;{}m", idx),
+        PaletteColor::Rgb((r, g, b)) => format!("\x1b[38;2;{};{};{}m", r, g, b),
+        PaletteColor::EightBit(idx) => format!("\x1b[38;5;{}m", idx),
     }
 }
 
 /// Converts a PaletteColor to ANSI background color escape sequence.
 fn palette_color_to_ansi_bg(color: PaletteColor) -> String {
     match color {
-        PaletteColor::Rgb((r, g, b)) => format!("\u{1b}[48;2;{};{};{}m", r, g, b),
-        PaletteColor::EightBit(idx) => format!("\u{1b}[48;5;{}m", idx),
+        PaletteColor::Rgb((r, g, b)) => format!("\x1b[48;2;{};{};{}m", r, g, b),
+        PaletteColor::EightBit(idx) => format!("\x1b[48;5;{}m", idx),
     }
 }
 
@@ -151,13 +152,14 @@ impl State {
 
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        // Request permissions needed for future functionality
+        // Request permissions needed for tab/pane state
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
         ]);
 
-        // Subscribe to events
+        // Subscribe to all events upfront
+        // (Can't call subscribe() from update() - causes double-borrow panic)
         subscribe(&[
             EventType::PermissionRequestResult,
             EventType::TabUpdate,
@@ -168,16 +170,19 @@ impl ZellijPlugin for State {
 
         // Load persisted state
         self.notification_state = load_state().notifications;
+
+        eprintln!("zellij-attention: loaded\n");
     }
 
     fn update(&mut self, event: Event) -> bool {
-        #[cfg(debug_assertions)]
-        eprintln!("zellij-attention: Received event: {:?}", event);
-
         match event {
             Event::PermissionRequestResult(status) => {
                 self.permissions_granted = status == PermissionStatus::Granted;
-                true // Re-render to show updated status
+                // Tab-bar plugins should not be selectable
+                // This also gives us the full row for content (pane_content_rows: 1)
+                set_selectable(false);
+                eprintln!("zellij-attention: permissions={}, selectable=false\n", self.permissions_granted);
+                true
             }
             Event::TabUpdate(tab_info) => {
                 self.tabs = tab_info;
@@ -232,28 +237,25 @@ impl ZellijPlugin for State {
         self.tab_positions.clear();
 
         if !self.permissions_granted {
-            println!("zellij-attention: Waiting for permissions...");
+            print!("Waiting for permissions...");
+            let _ = std::io::stdout().flush();
             return;
         }
 
         if self.tabs.is_empty() {
-            // Empty tab-bar: just fill with background color
-            let bg = palette_color_to_ansi_bg(
-                self.mode_info.style.colors.ribbon_unselected.background,
-            );
-            print!("{}{}\u{1b}[0K\u{1b}[0m", bg, " ".repeat(cols));
             return;
         }
 
+        let colors = &self.mode_info.style.colors;
         let mut output = String::new();
         let mut current_x = 0;
 
         for tab in &self.tabs {
             // Get notification state for this tab
-            let notification_state = self.get_tab_notification_state(tab.position);
+            let notification = self.get_tab_notification_state(tab.position);
 
             // Build indicator string
-            let indicator = match notification_state {
+            let indicator = match notification {
                 Some(NotificationType::Waiting) => " !",
                 Some(NotificationType::Completed) => " *",
                 None => "",
@@ -270,98 +272,100 @@ impl ZellijPlugin for State {
 
             // Choose colors based on active state
             let (fg_color, bg_color) = if tab.active {
-                (
-                    self.mode_info.style.colors.ribbon_selected.base,
-                    self.mode_info.style.colors.ribbon_selected.background,
-                )
+                (colors.ribbon_selected.base, colors.ribbon_selected.background)
             } else {
-                (
-                    self.mode_info.style.colors.ribbon_unselected.base,
-                    self.mode_info.style.colors.ribbon_unselected.background,
-                )
+                (colors.ribbon_unselected.base, colors.ribbon_unselected.background)
             };
 
-            // Format tab with colors
             let fg = palette_color_to_ansi_fg(fg_color);
             let bg = palette_color_to_ansi_bg(bg_color);
 
-            // If there's a notification, we need to colorize the indicator portion
-            if let Some(notification_type) = notification_state {
-                // Split tab_text into main part and indicator part
+            // If there's a notification, colorize the indicator portion
+            if let Some(notification_type) = notification {
                 let main_text = format!(" {}:{}", tab.position + 1, tab.name);
                 let indicator_color = match notification_type {
                     NotificationType::Waiting => {
-                        // Use error color (red semantic) for attention-seeking state
-                        palette_color_to_ansi_fg(self.mode_info.style.colors.exit_code_error.base)
+                        palette_color_to_ansi_fg(colors.exit_code_error.base)
                     }
                     NotificationType::Completed => {
-                        // Use success color (green semantic) for completed state
-                        palette_color_to_ansi_fg(self.mode_info.style.colors.exit_code_success.base)
+                        palette_color_to_ansi_fg(colors.exit_code_success.base)
                     }
                 };
-
-                // Output: bg + fg + main_text + indicator_color + indicator + reset + space
                 output.push_str(&format!(
-                    "{}{}{}{}{} \u{1b}[0m",
+                    "{}{}{}{}{} \x1b[0m",
                     bg, fg, main_text, indicator_color, indicator
                 ));
             } else {
-                // No notification, just output tab with base colors
-                output.push_str(&format!("{}{}{}\u{1b}[0m", bg, fg, tab_text));
+                output.push_str(&format!("{}{}{}\x1b[0m", bg, fg, tab_text));
             }
 
             // Track tab position for mouse clicks
-            let start_x = current_x;
-            let end_x = current_x + tab_width;
-            self.tab_positions.push((start_x, end_x));
-
+            self.tab_positions.push((current_x, current_x + tab_width));
             current_x += tab_width;
         }
 
         // Fill remaining space with background color
         if current_x < cols {
-            let bg = palette_color_to_ansi_bg(
-                self.mode_info.style.colors.ribbon_unselected.background,
-            );
-            let remaining = cols - current_x;
-            output.push_str(&format!("{}{}\u{1b}[0m", bg, " ".repeat(remaining)));
+            let bg = palette_color_to_ansi_bg(colors.ribbon_unselected.background);
+            output.push_str(&format!("{}{}\x1b[0m", bg, " ".repeat(cols - current_x)));
         }
 
         // Clear to end of line and print
-        output.push_str("\u{1b}[0K");
+        output.push_str("\x1b[0K");
         print!("{}", output);
+        let _ = std::io::stdout().flush();
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        eprintln!("zellij-attention: pipe name={} payload={:?} args={:?}\n",
+            pipe_message.name, pipe_message.payload, pipe_message.args);
+
         // Only handle messages to "notification" pipe, silently ignore others
         if pipe_message.name != "notification" {
             return false;
         }
 
-        // Extract payload, log error if missing
-        let payload = match pipe_message.payload {
-            Some(p) => p,
-            None => {
-                eprintln!("zellij-attention: No payload in pipe message");
-                return false;
+        // Parse event_type and pane_id from either payload (JSON) or args
+        let (event_type, pane_id) = if let Some(payload) = &pipe_message.payload {
+            // JSON payload format: {"event_type":"waiting","pane_id":0}
+            match serde_json::from_str::<PipeEvent>(payload) {
+                Ok(e) => (e.event_type, e.pane_id),
+                Err(e) => {
+                    eprintln!("zellij-attention: Failed to parse JSON: {}\n", e);
+                    return false;
+                }
             }
-        };
-
-        // Parse JSON payload
-        let event: PipeEvent = match serde_json::from_str(&payload) {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("zellij-attention: Failed to parse pipe payload: {}", e);
-                return false;
-            }
+        } else {
+            // Args format: --args "event_type=waiting,pane_id=0"
+            let event_type = match pipe_message.args.get("event_type") {
+                Some(t) => t.clone(),
+                None => {
+                    eprintln!("zellij-attention: Missing event_type in args\n");
+                    return false;
+                }
+            };
+            let pane_id: u32 = match pipe_message.args.get("pane_id") {
+                Some(id) => match id.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        eprintln!("zellij-attention: Invalid pane_id: {}\n", id);
+                        return false;
+                    }
+                },
+                None => {
+                    eprintln!("zellij-attention: Missing pane_id in args\n");
+                    return false;
+                }
+            };
+            (event_type, pane_id)
         };
 
         // Normalize event_type to lowercase and match
-        let notification_type = match event.event_type.to_lowercase().as_str() {
+        let notification_type = match event_type.to_lowercase().as_str() {
             "waiting" => NotificationType::Waiting,
             "completed" => NotificationType::Completed,
             unknown => {
-                eprintln!("zellij-attention: Unknown event type: {}", unknown);
+                eprintln!("zellij-attention: Unknown event type: {}\n", unknown);
                 return false;
             }
         };
@@ -369,11 +373,11 @@ impl ZellijPlugin for State {
         // Latest wins: create new HashSet with single entry, replacing any existing
         let mut notifications = HashSet::new();
         notifications.insert(notification_type);
-        self.notification_state.insert(event.pane_id, notifications);
+        self.notification_state.insert(pane_id, notifications);
 
         eprintln!(
-            "zellij-attention: Set pane {} to {:?}",
-            event.pane_id, notification_type
+            "zellij-attention: Set pane {} to {:?}\n",
+            pane_id, notification_type
         );
 
         // Persist state change
