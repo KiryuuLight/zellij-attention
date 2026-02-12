@@ -55,24 +55,28 @@ Automate notifications when Claude needs input or finishes tasks. Add to `~/.cla
 
 ```json
 {
-  "terminal": {
-    "hooks": {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "on": "Notification",
-          "command": "zellij",
-          "args": ["pipe", "--name", "zellij-attention::waiting::$ZELLIJ_PANE_ID"]
-        },
-        {
-          "type": "command",
-          "on": "Stop",
-          "command": "zellij",
-          "args": ["pipe", "--name", "zellij-attention::completed::$ZELLIJ_PANE_ID"]
-        }
-      ]
-    }
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zellij pipe --name \"zellij-attention::waiting::$ZELLIJ_PANE_ID\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zellij pipe --name \"zellij-attention::completed::$ZELLIJ_PANE_ID\""
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -196,8 +200,9 @@ zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"
 
 3. **Check state file:**
    ```bash
-   # State is persisted in your cwd (usually ~/)
-   ls -la ~/.zellij-attention-state.bin
+   # State is persisted in the directory where Zellij was launched
+   # /host/ in the plugin maps to your cwd
+   ls -la .zellij-attention-state.bin
    ```
 
 ### Plugin not loading
@@ -234,7 +239,7 @@ zellij pipe --plugin "zellij-attention" --message "waiting::5"
 
 - This is expected behavior if notifications are still present on other panes in the tab
 - Focus the pane with the notification to clear it — the tab name will restore automatically
-- Check persisted state: `rm ~/.zellij-attention-state.bin` (will clear all notifications on next restart)
+- Check persisted state: `rm .zellij-attention-state.bin` in the directory where Zellij was launched (will clear all notifications on next restart)
 
 ### Multiple plugin instances
 
