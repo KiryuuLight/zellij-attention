@@ -216,9 +216,9 @@ impl ZellijPlugin for State {
             }
             Event::TabUpdate(tab_info) => {
                 self.tabs = tab_info;
-                // Don't clear notifications here — rename_tab() triggers TabUpdate,
-                // which would cause a set→clear→set race with stale tab names.
-                // Clearing only happens in PaneUpdate (actual user focus changes).
+                if self.check_and_clear_focus() {
+                    self.update_tab_names();
+                }
                 false
             }
             Event::PaneUpdate(pane_manifest) => {
