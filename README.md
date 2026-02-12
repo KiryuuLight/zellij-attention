@@ -4,108 +4,72 @@ Know which Zellij pane needs attention without checking each one manually.
 
 ## What This Does
 
-`zellij-attention` tracks notification state across your Zellij panes and displays indicators in your zjstatus bar. Designed for Claude Code users running multiple AI sessions in floating panes, it lets you see at a glance which tabs have panes waiting for input or have completed tasks—without switching between them.
+Tracks notification state across panes and displays indicators directly in tab names. Designed for Claude Code users managing multiple AI sessions in floating panes. When Claude waits for input or completes a task, the corresponding tab is automatically renamed with a notification icon (e.g., "terminal" → "terminal ⏳"). Focusing the pane automatically clears the notification and restores the original tab name.
 
 ## How It Works
 
-External processes (like Claude Code hooks or manual shell commands) send pipe messages to the plugin using `zellij pipe --name "zellij-attention::EVENT_TYPE::PANE_ID"`. The plugin tracks notification state per pane, formats a status summary, and writes it to `~/.zellij-attention-status`. zjstatus reads this file via a command widget and displays it in the status bar. When you focus a pane with notifications, they're automatically cleared.
+1. External processes (Claude Code hooks, shell functions) send pipe messages to the plugin
+2. Plugin tracks notification state per pane and persists it across Zellij restarts
+3. Plugin renames tabs to append notification icons (⏳ for waiting, ✓ for completed)
+4. When you focus a pane with notifications, the plugin automatically clears them and restores the original tab name
+5. Works with any Zellij configuration — no status bar integration or additional plugins required
 
 ## Installation
 
-**1. Download the plugin:**
+Download the WASM plugin to your Zellij plugins directory:
 
 ```bash
 mkdir -p ~/.config/zellij/plugins
 curl -L https://github.com/KiryuuLight/zellij-attention/releases/latest/download/zellij-attention.wasm -o ~/.config/zellij/plugins/zellij-attention.wasm
 ```
 
-**2. Add to your Zellij layout** (see [Layout Configuration](#zellij-layout-configuration) below)
+Add the plugin to your Zellij layout (see [Layout Configuration](#zellij-layout-configuration) below).
 
 ## Zellij Layout Configuration
 
-The plugin loads via your Zellij layout file, **NOT** via `load_plugins` in `config.kdl`.
-
-Add this to your layout (e.g., `~/.config/zellij/layouts/default.kdl`):
+The plugin must be loaded via a layout pane in your Zellij configuration. Add it to `~/.config/zellij/layouts/default.kdl`:
 
 ```kdl
 layout {
+    // Plugin must be in a pane in default_tab_template
+    // Size 1 + borderless makes it invisible while active
     default_tab_template {
         pane size=1 borderless=true {
-            // zjstatus plugin - your existing status bar
-            plugin location="file:~/.config/zellij/plugins/zjstatus.wasm" {
-                // ... your existing zjstatus config ...
-
-                // Add these lines to your zjstatus config:
-                // Command widget that reads the attention status file
-                command_attention_command "/bin/bash -c \"cat $HOME/.zellij-attention-status 2>/dev/null || echo '#[fg=green]✓'\""
-                command_attention_format "{stdout}"
-                command_attention_interval "1"
-                command_attention_rendermode "static"
-
-                // Then use {command_attention} in your format string:
-                // format_left "{tabs} {command_attention}"
-            }
-        }
-
-        // Main pane - your terminal content goes here
-        children
-
-        pane size=1 borderless=true {
-            // zellij-attention plugin - runs as background service
             plugin location="file:~/.config/zellij/plugins/zellij-attention.wasm" {
-                // Optional configuration (these are defaults):
+                // Optional configuration (all have sensible defaults)
                 enabled "true"
-                waiting_color "#f5a623"      // Orange for waiting state
                 waiting_icon "⏳"
-                completed_color "#7cb342"    // Green for completed state
                 completed_icon "✓"
             }
         }
+        children  // Your normal panes go here
     }
 }
 ```
 
-**Key points:**
-
-- The plugin runs in a borderless pane (size=1) as a background service
-- zjstatus reads `~/.zellij-attention-status` using a command widget
-- The fallback `echo '#[fg=green]✓'` shows when no notifications exist
-- The command widget polls every 1 second (`interval "1"`)
+**Important:** The plugin loads via a layout pane, NOT via `load_plugins` in `config.kdl`. This creates one plugin instance per tab, which is the intended behavior.
 
 ## Claude Code Hooks
 
-Automate notifications when Claude needs input or finishes a task.
-
-Add this to your `~/.claude/settings.json`:
+Automate notifications when Claude needs input or finishes tasks. Add to `~/.claude/settings.json`:
 
 ```json
 {
-  "hooks": {
-    "Notification": {
+  "terminal": {
+    "hooks": {
       "matcher": "",
       "hooks": [
         {
           "type": "command",
+          "on": "Notification",
           "command": "zellij",
-          "args": [
-            "pipe",
-            "--name",
-            "zellij-attention::waiting::$ZELLIJ_PANE_ID"
-          ]
-        }
-      ]
-    },
-    "Stop": {
-      "matcher": "",
-      "hooks": [
+          "args": ["pipe", "--name", "zellij-attention::waiting::$ZELLIJ_PANE_ID"]
+        },
         {
           "type": "command",
+          "on": "Stop",
           "command": "zellij",
-          "args": [
-            "pipe",
-            "--name",
-            "zellij-attention::completed::$ZELLIJ_PANE_ID"
-          ]
+          "args": ["pipe", "--name", "zellij-attention::completed::$ZELLIJ_PANE_ID"]
         }
       ]
     }
@@ -113,184 +77,170 @@ Add this to your `~/.claude/settings.json`:
 }
 ```
 
-**What these hooks do:**
-
-- **Notification event**: Fires when Claude is waiting for user input. Sends a "waiting" notification.
-- **Stop event**: Fires when Claude finishes a task. Sends a "completed" notification.
-
-The hooks use `$ZELLIJ_PANE_ID` which is automatically set by Zellij in every pane.
+**Hook events:**
+- `Notification` — Fires when Claude waits for user input (sends "waiting" notification)
+- `Stop` — Fires when Claude finishes a task (sends "completed" notification)
 
 ## Shell Functions
 
-For manual notification testing or custom workflows, add these functions to your `~/.bashrc` or `~/.zshrc`:
+For manual testing or integration with other tools, add these functions to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-# Send a "waiting" notification for the current pane
+# Send waiting notification for current pane
 notify-waiting() {
     if [ -z "$ZELLIJ_PANE_ID" ]; then
-        echo "Error: Not running in Zellij (ZELLIJ_PANE_ID not set)"
+        echo "Error: Not running inside Zellij (ZELLIJ_PANE_ID not set)"
         return 1
     fi
     zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"
 }
 
-# Send a "completed" notification for the current pane
+# Send completed notification for current pane
 notify-completed() {
     if [ -z "$ZELLIJ_PANE_ID" ]; then
-        echo "Error: Not running in Zellij (ZELLIJ_PANE_ID not set)"
+        echo "Error: Not running inside Zellij (ZELLIJ_PANE_ID not set)"
         return 1
     fi
     zellij pipe --name "zellij-attention::completed::$ZELLIJ_PANE_ID"
 }
 ```
 
-**Usage examples:**
+**Usage:**
 
 ```bash
-# Start a long task, notify when done
-cargo build && notify-completed
+# Run a long command and notify when done
+some-long-command && notify-completed
 
-# Or notify that you're waiting
+# Signal waiting state manually
 notify-waiting
 ```
 
 ## Pane IDs
 
-`$ZELLIJ_PANE_ID` is an environment variable automatically set by Zellij in every terminal pane. It's a numeric identifier that uniquely identifies the pane within your Zellij session.
+The plugin uses Zellij's pane IDs to track which pane triggered each notification. `$ZELLIJ_PANE_ID` is an environment variable automatically set by Zellij in every terminal pane.
 
-**Check your current pane ID:**
+**Check your pane ID:**
 
 ```bash
 echo $ZELLIJ_PANE_ID
 ```
 
-This ID is used in pipe messages to tell the plugin which pane triggered the notification.
+This ID is used in pipe messages to identify which pane needs attention. When you focus a pane, the plugin clears notifications for that specific pane ID.
 
 ## Configuration
 
-All configuration options are optional. The plugin works out-of-the-box with sensible defaults.
+The plugin works out-of-the-box with sensible defaults. All configuration is optional.
 
-| Option            | Type       | Default   | Description                           |
-|-------------------|------------|-----------|---------------------------------------|
-| `enabled`         | bool       | `true`    | Enable/disable all notifications      |
-| `waiting_color`   | hex color  | `#f5a623` | Color for waiting state (orange)      |
-| `waiting_icon`    | string     | `⏳`      | Icon for waiting state                |
-| `completed_color` | hex color  | `#7cb342` | Color for completed state (green)     |
-| `completed_icon`  | string     | `✓`       | Icon for completed state              |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | `true` | Enable or disable all notifications |
+| `waiting_icon` | string | `⏳` | Icon appended to tab name for waiting state |
+| `completed_icon` | string | `✓` | Icon appended to tab name for completed state |
 
-**Example custom configuration:**
+**Example with custom icons:**
 
 ```kdl
 plugin location="file:~/.config/zellij/plugins/zellij-attention.wasm" {
     enabled "true"
-    waiting_color "#ff6b6b"      // Red for urgent
     waiting_icon "!"
-    completed_color "#51cf66"    // Bright green
-    completed_icon "✓"
+    completed_icon "*"
 }
 ```
 
 **Notes:**
-
-- Hex colors accept `#RGB` or `#RRGGBB` formats (with or without `#`)
-- Invalid colors fall back to defaults with a warning in Zellij logs
-- Icons longer than 4 characters may not display well
+- Icons are appended to the END of tab names (e.g., "terminal ⏳" not "⏳ terminal")
+- Icons longer than 4 characters will trigger a warning but will still work
+- Setting `enabled "false"` disables all notifications (useful for temporary disabling)
 
 ## Pipe Message Format
 
-The plugin listens for pipe messages with this format:
+The plugin listens for pipe messages in this format:
 
 ```
 zellij-attention::EVENT_TYPE::PANE_ID
 ```
 
 **Components:**
-
-- **Prefix**: Always `zellij-attention`
-- **EVENT_TYPE**: Either `waiting` or `completed` (case-insensitive)
-- **PANE_ID**: Numeric pane ID (from `$ZELLIJ_PANE_ID`)
+- `EVENT_TYPE` — Either `waiting` or `completed` (case-insensitive)
+- `PANE_ID` — Numeric pane ID (from `$ZELLIJ_PANE_ID`)
 
 **Example commands:**
 
 ```bash
-# Send "waiting" notification for pane 42
-zellij pipe --name "zellij-attention::waiting::42"
+# Send waiting notification for pane 5
+zellij pipe --name "zellij-attention::waiting::5"
 
-# Send "completed" notification for current pane
-zellij pipe --name "zellij-attention::completed::$ZELLIJ_PANE_ID"
+# Send completed notification for pane 5
+zellij pipe --name "zellij-attention::completed::5"
+
+# Using environment variable (typical usage)
+zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"
 ```
 
-**CRITICAL**: Always use the `--name` flag (broadcast pipe). Do NOT use `--plugin` (targeted pipe), as it creates new plugin instances due to configuration mismatches.
+**CRITICAL:** Always use `--name` (broadcast pipe), NEVER `--plugin` (targeted pipe). Targeted pipes attempt to match plugin configuration and will create new plugin instances instead of communicating with existing ones.
 
 ## Troubleshooting
 
 ### Notifications not appearing
 
-1. **Check plugin is loaded**: Look for a size=1 pane in your layout with the plugin
-2. **Verify pipe commands**: Run `zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"` manually
-3. **Check status file**: `cat ~/.zellij-attention-status` should show output
-4. **Check zjstatus config**: Verify you added the `command_attention_*` options and `{command_attention}` in your format string
+1. **Check plugin is loaded:**
+   - Verify plugin pane exists in your layout's `default_tab_template`
+   - Check Zellij logs: `tail -f /tmp/zellij-*/zellij-log-*/zellij.log` (look for "zellij-attention: loaded")
+
+2. **Verify pipe commands work:**
+   ```bash
+   echo $ZELLIJ_PANE_ID  # Should print a number
+   zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"
+   # Tab name should change immediately
+   ```
+
+3. **Check state file:**
+   ```bash
+   # State is persisted in your cwd (usually ~/)
+   ls -la ~/.zellij-attention-state.bin
+   ```
 
 ### Plugin not loading
 
-The plugin **must** be loaded via a layout pane, NOT via `load_plugins` in `config.kdl`. The `load_plugins` directive doesn't pass configuration to plugins properly.
+- The plugin MUST be in a layout pane (in `default_tab_template`), NOT in `load_plugins` section of `config.kdl`
+- `load_plugins` in `config.kdl` does NOT pass configuration to plugins — use layout panes instead
 
-**Wrong:**
+### Pipe command hangs or does nothing
 
-```kdl
-// In config.kdl - DOESN'T WORK
-plugins {
-    zellij-attention location="file:~/.config/zellij/plugins/zellij-attention.wasm"
-}
-```
-
-**Correct:**
-
-```kdl
-// In layout file - WORKS
-pane size=1 borderless=true {
-    plugin location="file:~/.config/zellij/plugins/zellij-attention.wasm" {
-        // config here
-    }
-}
-```
-
-### Pipe command hangs
-
-If `zellij pipe` hangs, you're likely using `--plugin` instead of `--name`.
-
-**Wrong:**
-
-```bash
-zellij pipe --plugin zellij-attention "message"  # Hangs or creates new instances
-```
-
-**Correct:**
-
-```bash
-zellij pipe --name "zellij-attention::waiting::$ZELLIJ_PANE_ID"  # Works
-```
+- Ensure you're using `--name` flag (broadcast), NOT `--plugin` flag (targeted)
+- Check `$ZELLIJ_PANE_ID` is set: `echo $ZELLIJ_PANE_ID`
+- Verify format: `zellij-attention::EVENT_TYPE::PANE_ID` (double-colon separated)
 
 ### Wrong format errors
 
-The message format is colon-separated, NOT JSON or other formats.
-
-**Wrong:**
-
+**Correct format:**
 ```bash
-zellij pipe --name '{"event":"waiting","pane":42}'  # Invalid format
-zellij pipe --name "waiting:42"                      # Missing prefix
+zellij pipe --name "zellij-attention::waiting::5"
 ```
 
-**Correct:**
-
+**Common mistakes:**
 ```bash
-zellij pipe --name "zellij-attention::waiting::42"  # Double colons
+# WRONG: Single colon
+zellij pipe --name "zellij-attention:waiting:5"
+
+# WRONG: Missing plugin name prefix
+zellij pipe --name "waiting::5"
+
+# WRONG: Using --plugin instead of --name
+zellij pipe --plugin "zellij-attention" --message "waiting::5"
 ```
 
-### Multiple notification instances
+### Tabs not restoring original names
 
-It's normal to have one plugin instance per tab. The plugin uses file-based state (`~/.zellij-attention-state.bin`) to coordinate between instances.
+- This is expected behavior if notifications are still present on other panes in the tab
+- Focus the pane with the notification to clear it — the tab name will restore automatically
+- Check persisted state: `rm ~/.zellij-attention-state.bin` (will clear all notifications on next restart)
+
+### Multiple plugin instances
+
+- This is normal and expected — one instance per tab via `default_tab_template`
+- All instances share state via `/host/.zellij-attention-state.bin` (in your cwd)
+- Broadcast pipes (`--name`) reach all instances simultaneously
 
 ## Development
 
@@ -300,10 +250,26 @@ Build from source:
 cargo build --target wasm32-wasip1 --release
 ```
 
-The WASM binary will be at `target/wasm32-wasip1/release/zellij-attention.wasm`.
+Output: `target/wasm32-wasip1/release/zellij-attention.wasm`
 
----
+Copy to plugins directory:
 
-**Repository**: https://github.com/KiryuuLight/zellij-attention
+```bash
+cp target/wasm32-wasip1/release/zellij-attention.wasm ~/.config/zellij/plugins/
+```
 
-**License**: MIT
+**Debug logging:**
+
+The plugin includes debug output that only appears in debug builds:
+
+```bash
+# Build with debug output
+cargo build --target wasm32-wasip1
+
+# Watch Zellij logs
+tail -f /tmp/zellij-*/zellij-log-*/zellij.log | grep "zellij-attention"
+```
+
+## License
+
+MIT
