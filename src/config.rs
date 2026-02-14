@@ -18,7 +18,7 @@ impl Default for NotificationConfig {
         Self {
             enabled: true,
             waiting_icon: "⏳".to_string(),
-            completed_icon: "✓".to_string(),
+            completed_icon: "✅".to_string(),
         }
     }
 }
@@ -75,7 +75,7 @@ mod tests {
         let config = NotificationConfig::default();
         assert!(config.enabled);
         assert_eq!(config.waiting_icon, "⏳");
-        assert_eq!(config.completed_icon, "✓");
+        assert_eq!(config.completed_icon, "✅");
     }
 
     #[test]

@@ -4,30 +4,18 @@ Know which Zellij tab needs your attention — without checking each one.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A Zellij plugin that adds notification icons directly to tab names. When an external process (like Claude Code) needs your attention, the tab is renamed with an indicator — e.g., `terminal` becomes `terminal ⏳`. Focusing the pane clears the notification automatically.
+A standalone Zellij WASM plugin that adds notification icons directly to tab names. Works with both the default Zellij tab bar and [zjstatus](https://github.com/dj95/zjstatus). When an external process (like Claude Code) needs your attention, the tab is renamed with an indicator — e.g., `terminal` becomes `terminal ⏳`. Focusing the pane clears the notification automatically.
 
-<!-- TODO: Add demo GIF/video here
-Record a short GIF showing:
-1. Two tabs open, user on tab 2
-2. Claude Code triggers a "waiting" notification on tab 1
-3. Tab 1 name updates with ⏳ icon
-4. User switches to tab 1 — icon clears automatically
-5. Claude finishes — tab shows ✓, then clears on focus
-
-Tools: `asciinema` + `agg`, or `vhs` (https://github.com/charmbracelet/vhs)
-
-Place the file in assets/demo.gif and uncomment:
 ![demo](assets/demo.gif)
--->
 
 ## Features
 
 - **Tab-level notifications** — icons appended to tab names, visible at a glance
 - **Auto-clear on focus** — switch to the pane and the notification disappears
-- **Two notification states** — ⏳ waiting (needs input) and ✓ completed (task done)
+- **Two notification states** — ⏳ waiting (needs input) and ✅ completed (task done)
 - **Persisted state** — notifications survive plugin reloads and Zellij restarts
 - **Configurable icons** — use any character or emoji as notification indicator
-- **Zero dependencies** — no status bar plugins or external tools required
+- **Standalone plugin** — works independently, no zjstatus or other status bar plugins needed
 
 ## Installation
 
@@ -49,7 +37,7 @@ layout {
                 // All options are optional — defaults shown
                 enabled "true"
                 waiting_icon "⏳"
-                completed_icon "✓"
+                completed_icon "✅"
             }
         }
         children
@@ -105,20 +93,20 @@ Automate notifications with [Claude Code hooks](https://docs.anthropic.com/en/do
 }
 ```
 
-| Hook | Notification | Meaning |
-|------|-------------|---------|
-| `Notification` | ⏳ waiting | Claude needs user input |
-| `Stop` | ✓ completed | Claude finished the task |
+| Hook           | Notification | Meaning                  |
+| -------------- | ------------ | ------------------------ |
+| `Notification` | ⏳ waiting   | Claude needs user input  |
+| `Stop`         | ✅ completed | Claude finished the task |
 
 ## Configuration
 
 All configuration is optional — the plugin works out of the box.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `"true"` | Enable or disable notifications |
-| `waiting_icon` | `"⏳"` | Icon for waiting state |
-| `completed_icon` | `"✓"` | Icon for completed state |
+| Option           | Default  | Description                     |
+| ---------------- | -------- | ------------------------------- |
+| `enabled`        | `"true"` | Enable or disable notifications |
+| `waiting_icon`   | `"⏳"`   | Icon for waiting state          |
+| `completed_icon` | `"✅"`   | Icon for completed state        |
 
 Icons are appended to the end of tab names (e.g., `terminal ⏳`).
 
