@@ -31,13 +31,16 @@ jobs:
       - name: Build release
         run: cargo build --release --target wasm32-wasip1
 
+      - name: Install git-cliff
+        run: cargo install git-cliff
+
       - name: Generate changelog
         id: changelog
-        uses: orhun/git-cliff-action@v3
-        with:
-          args: --latest --strip header
-        env:
-          OUTPUT: CHANGES.md
+        run: |
+          CHANGELOG=$(git cliff --latest --strip header --config cliff.toml)
+          echo "content<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGELOG" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
