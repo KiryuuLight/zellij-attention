@@ -1,0 +1,63 @@
+name: CI
+
+on: push
+
+permissions:
+  contents: read
+
+env:
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  clippy:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: wasm32-wasip1
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Clippy
+        run: cargo clippy --target wasm32-wasip1 --all-features --lib
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --lib --target x86_64-unknown-linux-gnu
+
+  build:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --target wasm32-wasip1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zellij-attention.wasm
+          path: target/wasm32-wasip1/release/zellij-attention.wasm

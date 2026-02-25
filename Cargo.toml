@@ -2,6 +2,15 @@
 name = "zellij-attention"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+
+[lib]
+name = "zellij_attention"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zellij-attention"
+path = "src/main.rs"
 
 [dependencies]
 zellij-tile = "0.43.1"
