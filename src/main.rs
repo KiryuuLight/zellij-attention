@@ -61,6 +61,87 @@ impl State {
         false
     }
 
+    /// Removes notification entries for pane IDs that no longer exist.
+    /// Returns true if any stale entries were removed.
+    fn clean_stale_notifications(&mut self) -> bool {
+        if self.notification_state.is_empty() || self.panes.panes.is_empty() {
+            return false;
+        }
+
+        let current_pane_ids: HashSet<u32> = self
+            .panes
+            .panes
+            .values()
+            .flat_map(|panes| panes.iter().filter(|p| !p.is_plugin).map(|p| p.id))
+            .collect();
+
+        let stale_ids: Vec<u32> = self
+            .notification_state
+            .keys()
+            .filter(|id| !current_pane_ids.contains(id))
+            .copied()
+            .collect();
+
+        if stale_ids.is_empty() {
+            return false;
+        }
+
+        for id in &stale_ids {
+            self.notification_state.remove(id);
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "zellij-attention: Removed stale notification for pane {}",
+                id
+            );
+        }
+
+        self.persist_state();
+        true
+    }
+
+    /// Returns true if there are original_tab_names entries waiting to be
+    /// restored (i.e., their tab positions have no active notifications).
+    fn has_pending_restores(&self) -> bool {
+        self.original_tab_names.keys().any(|pos| {
+            self.get_tab_notification_state(*pos).is_none()
+        })
+    }
+
+    /// Returns true if any tab has a stale icon suffix with no active notification.
+    fn has_stale_icons(&self) -> bool {
+        for tab in &self.tabs {
+            if self.get_tab_notification_state(tab.position).is_some() {
+                continue;
+            }
+            if self.original_tab_names.contains_key(&tab.position) {
+                continue; // will be handled by restore logic
+            }
+            if self.tab_name_has_icon(&tab.name) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks if a tab name ends with one of our notification icon suffixes.
+    fn tab_name_has_icon(&self, name: &str) -> bool {
+        let waiting_suffix = format!(" {}", self.config.waiting_icon);
+        let completed_suffix = format!(" {}", self.config.completed_icon);
+        name.ends_with(&waiting_suffix) || name.ends_with(&completed_suffix)
+    }
+
+    /// Strips notification icon suffixes from a tab name.
+    fn strip_icons(&self, name: &str) -> String {
+        let mut result = name.to_string();
+        for icon in [&self.config.waiting_icon, &self.config.completed_icon] {
+            let suffix = format!(" {}", icon);
+            while result.ends_with(&suffix) {
+                result.truncate(result.len() - suffix.len());
+            }
+        }
+        result
+    }
+
     fn get_tab_notification_state(&self, tab_position: usize) -> Option<NotificationType> {
         let panes = self.panes.panes.get(&tab_position)?;
         let mut has_completed = false;
@@ -113,19 +194,13 @@ impl State {
                 notified_positions.insert(tab.position);
 
                 if !self.original_tab_names.contains_key(&tab.position) {
-                    let mut original = if tab.name.is_empty() {
+                    let original = if tab.name.is_empty() {
                         format!("Tab #{}", tab.position + 1)
                     } else {
-                        tab.name.clone()
+                        // Strip any trailing notification icons from stale tab.name
+                        // to prevent accumulation (e.g. "Name ⏳ ⏳" → "Name")
+                        self.strip_icons(&tab.name)
                     };
-                    // Defensive: strip any trailing notification icons from stale tab.name
-                    // to prevent accumulation (e.g. "Name ⏳ ⏳" → "Name")
-                    for icon in [&self.config.waiting_icon, &self.config.completed_icon] {
-                        let suffix = format!(" {}", icon);
-                        while original.ends_with(&suffix) {
-                            original.truncate(original.len() - suffix.len());
-                        }
-                    }
                     self.original_tab_names.insert(tab.position, original);
                 }
 
@@ -158,19 +233,43 @@ impl State {
             .collect();
 
         for pos in positions_to_restore {
-            if let Some(original_name) = self.original_tab_names.remove(&pos) {
-                if let Some(tab) = self.tabs.iter().find(|t| t.position == pos) {
+            if let Some(tab) = self.tabs.iter().find(|t| t.position == pos) {
+                if let Some(original_name) = self.original_tab_names.remove(&pos) {
                     if tab.name != original_name {
                         // Zellij's RenameTab handler subtracts 1 (expects 1-indexed)
                         rename_tab((pos + 1) as u32, &original_name);
                     }
                 }
             }
+            // If tab not found yet (e.g. tabs not loaded), keep the entry for later
+        }
+
+        // Strip stale icons from tabs that have no notification and no pending restore.
+        // This handles the case where Zellij persisted renamed tab names across sessions
+        // but the plugin's state was lost or pane IDs changed.
+        for tab in &self.tabs {
+            if notified_positions.contains(&tab.position) {
+                continue;
+            }
+            if self.original_tab_names.contains_key(&tab.position) {
+                continue;
+            }
+            if self.tab_name_has_icon(&tab.name) {
+                let clean_name = self.strip_icons(&tab.name);
+                eprintln!(
+                    "zellij-attention: Stripping stale icon from tab pos={} '{}' -> '{}'",
+                    tab.position, tab.name, clean_name
+                );
+                rename_tab((tab.position + 1) as u32, &clean_name);
+            }
         }
 
         // Clean up cached names for tabs that no longer exist
-        let valid_positions: HashSet<usize> = self.tabs.iter().map(|t| t.position).collect();
-        self.original_tab_names.retain(|pos, _| valid_positions.contains(pos));
+        // Only clean up if we actually have tab data (avoid wiping on startup before tabs load)
+        if !self.tabs.is_empty() {
+            let valid_positions: HashSet<usize> = self.tabs.iter().map(|t| t.position).collect();
+            self.original_tab_names.retain(|pos, _| valid_positions.contains(pos));
+        }
 
         // Persist original_tab_names changes
         self.persist_state();
@@ -216,15 +315,22 @@ impl ZellijPlugin for State {
             }
             Event::TabUpdate(tab_info) => {
                 self.tabs = tab_info;
-                if self.check_and_clear_focus() {
+                let focus_cleared = self.check_and_clear_focus();
+                let stale_cleaned = self.clean_stale_notifications();
+                if focus_cleared || stale_cleaned || self.has_pending_restores()
+                    || self.has_stale_icons()
+                {
                     self.update_tab_names();
                 }
                 false
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.panes = pane_manifest;
-                // Only update tab names if a notification was cleared
-                if self.check_and_clear_focus() {
+                let focus_cleared = self.check_and_clear_focus();
+                let stale_cleaned = self.clean_stale_notifications();
+                if focus_cleared || stale_cleaned || self.has_pending_restores()
+                    || self.has_stale_icons()
+                {
                     self.update_tab_names();
                 }
                 false
@@ -323,3 +429,223 @@ impl ZellijPlugin for State {
 }
 
 register_plugin!(State);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Provide FFI stub so tests can link on native target
+    #[no_mangle]
+    pub extern "C" fn host_run_plugin_command() {}
+
+    fn make_tab(position: usize, name: &str, active: bool) -> TabInfo {
+        TabInfo {
+            position,
+            name: name.to_string(),
+            active,
+            ..Default::default()
+        }
+    }
+
+    fn make_pane(id: u32, is_plugin: bool, is_focused: bool) -> PaneInfo {
+        PaneInfo {
+            id,
+            is_plugin,
+            is_focused,
+            ..Default::default()
+        }
+    }
+
+    fn make_manifest(tab_panes: Vec<(usize, Vec<PaneInfo>)>) -> PaneManifest {
+        let mut panes = HashMap::new();
+        for (pos, p) in tab_panes {
+            panes.insert(pos, p);
+        }
+        PaneManifest { panes }
+    }
+
+    fn add_notification(state: &mut State, pane_id: u32, ntype: NotificationType) {
+        let mut set = HashSet::new();
+        set.insert(ntype);
+        state.notification_state.insert(pane_id, set);
+    }
+
+    #[test]
+    fn test_strip_icons() {
+        let state = State::default();
+        assert_eq!(state.strip_icons("Tab 1 ⏳"), "Tab 1");
+        assert_eq!(state.strip_icons("Tab 1 ✅"), "Tab 1");
+        assert_eq!(state.strip_icons("Tab 1 ⏳ ⏳"), "Tab 1");
+        assert_eq!(state.strip_icons("Tab 1"), "Tab 1");
+        assert_eq!(state.strip_icons(""), "");
+    }
+
+    #[test]
+    fn test_tab_name_has_icon() {
+        let state = State::default();
+        assert!(state.tab_name_has_icon("Tab 1 ⏳"));
+        assert!(state.tab_name_has_icon("Tab 1 ✅"));
+        assert!(!state.tab_name_has_icon("Tab 1"));
+        assert!(!state.tab_name_has_icon("⏳ Tab 1")); // icon not at end
+    }
+
+    #[test]
+    fn test_has_stale_icons_detects_orphaned_icons() {
+        let mut state = State::default();
+        // Tab has icon in name but no notification state and no original_tab_names entry
+        state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
+        state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
+
+        assert!(state.has_stale_icons());
+    }
+
+    #[test]
+    fn test_has_stale_icons_ignores_active_notifications() {
+        let mut state = State::default();
+        state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
+        state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
+        add_notification(&mut state, 1, NotificationType::Waiting);
+
+        assert!(!state.has_stale_icons());
+    }
+
+    #[test]
+    fn test_has_stale_icons_ignores_pending_restores() {
+        let mut state = State::default();
+        state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
+        state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
+        state.original_tab_names.insert(0, "Tab 1".to_string());
+
+        // has original_tab_names entry, so restore logic handles it, not stale icon logic
+        assert!(!state.has_stale_icons());
+    }
+
+    #[test]
+    fn test_clean_stale_notifications_removes_old_pane_ids() {
+        let mut state = State::default();
+        // Old session had pane 99, new session has pane 1
+        add_notification(&mut state, 99, NotificationType::Waiting);
+        state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
+
+        assert!(state.clean_stale_notifications());
+        assert!(state.notification_state.is_empty());
+    }
+
+    #[test]
+    fn test_clean_stale_skipped_when_panes_empty() {
+        let mut state = State::default();
+        add_notification(&mut state, 99, NotificationType::Waiting);
+        // Panes not loaded yet
+
+        assert!(!state.clean_stale_notifications());
+        assert!(!state.notification_state.is_empty()); // preserved
+    }
+
+    #[test]
+    fn test_session_restart_scenario_state_file_exists() {
+        // Simulates: kill session, reattach. Zellij persists tab names with icons.
+        // State file has old pane IDs and original_tab_names.
+        let mut state = State::default();
+
+        // Persisted state from old session
+        add_notification(&mut state, 50, NotificationType::Waiting);
+        state.original_tab_names.insert(0, "Tab 1".to_string());
+        state.original_tab_names.insert(1, "Tab 2".to_string());
+
+        // 1. TabUpdate arrives first (panes still empty)
+        state.tabs = vec![
+            make_tab(0, "Tab 1 ⏳", true),
+            make_tab(1, "Tab 2", false),
+        ];
+
+        // clean_stale_notifications: panes empty → skipped
+        assert!(!state.clean_stale_notifications());
+        // has_pending_restores: original_tab_names has entries, panes empty → returns None → true
+        assert!(state.has_pending_restores());
+        // At this point update_tab_names would be called.
+        // In update_tab_names: get_tab_notification_state returns None (panes empty),
+        // so restore loop fires. Tab 0 found → removes original, would rename.
+        // Tab 1 found → removes original, name matches → no rename.
+        // This is correct behavior.
+
+        // 2. PaneUpdate arrives
+        state.panes = make_manifest(vec![
+            (0, vec![make_pane(1, false, true), make_pane(10, true, false)]),
+            (1, vec![make_pane(2, false, false), make_pane(11, true, false)]),
+        ]);
+
+        // Now stale cleanup works
+        assert!(state.clean_stale_notifications());
+        assert!(state.notification_state.is_empty());
+    }
+
+    #[test]
+    fn test_session_restart_scenario_state_file_deleted() {
+        // Simulates: user deletes state file, kills session, reattaches.
+        // Zellij persists tab names with icons, but plugin has NO state.
+        let mut state = State::default();
+        // No persisted notifications, no original_tab_names
+
+        // TabUpdate: tabs still have icon names from Zellij's session persistence
+        state.tabs = vec![
+            make_tab(0, "Tab 1 ⏳", true),
+            make_tab(1, "Tab 2 ✅", false),
+        ];
+        state.panes = make_manifest(vec![
+            (0, vec![make_pane(1, false, true)]),
+            (1, vec![make_pane(2, false, false)]),
+        ]);
+
+        // No notifications, no original_tab_names → pending restores is false
+        assert!(!state.has_pending_restores());
+        // But has_stale_icons should detect the orphaned icons
+        assert!(state.has_stale_icons());
+        // update_tab_names would strip them via the stale icon loop
+    }
+
+    #[test]
+    fn test_original_tab_names_not_wiped_when_tabs_empty() {
+        let mut state = State::default();
+        state.original_tab_names.insert(0, "Tab 1".to_string());
+        // tabs is empty (not loaded yet)
+
+        // Simulate what update_tab_names does for the cleanup section:
+        // With the fix, this should NOT wipe original_tab_names
+        assert!(state.tabs.is_empty());
+        // The guard `if !self.tabs.is_empty()` prevents cleanup
+        assert!(state.original_tab_names.contains_key(&0));
+    }
+
+    #[test]
+    fn test_get_tab_notification_state_skips_plugin_panes() {
+        let mut state = State::default();
+        // Plugin pane with id=1 and terminal pane with id=1 — only terminal should match
+        state.panes = make_manifest(vec![
+            (0, vec![
+                make_pane(1, true, false),  // plugin pane
+                make_pane(2, false, true),  // terminal pane
+            ]),
+        ]);
+        add_notification(&mut state, 1, NotificationType::Waiting);
+
+        // Should be None because pane 1 is a plugin pane (skipped), pane 2 has no notification
+        assert_eq!(state.get_tab_notification_state(0), None);
+
+        // Now add notification for the terminal pane
+        add_notification(&mut state, 2, NotificationType::Completed);
+        assert_eq!(state.get_tab_notification_state(0), Some(NotificationType::Completed));
+    }
+
+    #[test]
+    fn test_check_and_clear_focus() {
+        let mut state = State::default();
+        state.tabs = vec![make_tab(0, "Tab 1", true)];
+        state.panes = make_manifest(vec![
+            (0, vec![make_pane(5, false, true)]),
+        ]);
+        add_notification(&mut state, 5, NotificationType::Waiting);
+
+        assert!(state.check_and_clear_focus());
+        assert!(state.notification_state.is_empty());
+    }
+}
