@@ -2,7 +2,9 @@
 
 Know which Zellij tab needs your attention — without checking each one.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
 A standalone Zellij WASM plugin that adds notification icons directly to tab names. Works with both the default Zellij tab bar and [zjstatus](https://github.com/dj95/zjstatus). When an external process (like Claude Code) needs your attention, the tab is renamed with an indicator — e.g., `terminal` becomes `terminal ⏳`. Focusing the pane clears the notification automatically.
 
@@ -13,7 +15,7 @@ https://github.com/user-attachments/assets/646effc0-1c24-413d-bef3-3d85591cd89b
 - **Tab-level notifications** — icons appended to tab names, visible at a glance
 - **Auto-clear on focus** — switch to the pane and the notification disappears
 - **Two notification states** — ⏳ waiting (needs input) and ✅ completed (task done)
-- **Persisted state** — notifications survive plugin reloads and Zellij restarts
+- **Memory-only state** — lightweight, no disk I/O; stale icons cleaned up automatically on restart
 - **Configurable icons** — use any character or emoji as notification indicator
 - **Standalone plugin** — works independently, no zjstatus or other status bar plugins needed
 
