@@ -21,7 +21,7 @@ https://github.com/user-attachments/assets/646effc0-1c24-413d-bef3-3d85591cd89b
 
 ## Installation
 
-Download the plugin and add it to your Zellij layout:
+Download the plugin and add it to your Zellij config:
 
 ```bash
 mkdir -p ~/.config/zellij/plugins
@@ -29,25 +29,20 @@ curl -L https://github.com/KiryuuLight/zellij-attention/releases/latest/download
   -o ~/.config/zellij/plugins/zellij-attention.wasm
 ```
 
-Add to `~/.config/zellij/layouts/default.kdl`:
+Add to `~/.config/zellij/config.kdl`:
 
 ```kdl
-layout {
-    default_tab_template {
-        pane size=1 borderless=true {
-            plugin location="file:~/.config/zellij/plugins/zellij-attention.wasm" {
-                // All options are optional — defaults shown
-                enabled "true"
-                waiting_icon "⏳"
-                completed_icon "✅"
-            }
-        }
-        children
+load_plugins {
+    "file:~/.config/zellij/plugins/zellij-attention.wasm" {
+        // All options are optional — defaults shown
+        enabled "true"
+        waiting_icon "⏳"
+        completed_icon "✅"
     }
 }
 ```
 
-> **Note:** The plugin must be in a layout pane, NOT in `load_plugins` in `config.kdl`. Layout panes are the only way to pass configuration to plugins.
+The plugin loads in the background with no visible pane — it won't consume any screen space.
 
 ## Quick Start
 
