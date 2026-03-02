@@ -108,7 +108,7 @@ fn test_clean_stale_skipped_when_panes_empty() {
 }
 
 #[test]
-fn test_session_restart_scenario_state_file_deleted() {
+fn test_stale_icons_after_restart_with_no_saved_state() {
     let mut state = State::default();
 
     state.tabs = vec![

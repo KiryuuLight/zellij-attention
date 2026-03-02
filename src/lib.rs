@@ -263,6 +263,7 @@ impl State {
         if !self.tabs.is_empty() {
             let valid_positions: HashSet<usize> = self.tabs.iter().map(|t| t.position).collect();
             self.original_tab_names.retain(|pos, _| valid_positions.contains(pos));
+            self.pending_strips.retain(|pos| valid_positions.contains(pos));
         }
 
         self.updating_tabs = false;
