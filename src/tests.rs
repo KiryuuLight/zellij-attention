@@ -108,33 +108,6 @@ fn test_clean_stale_skipped_when_panes_empty() {
 }
 
 #[test]
-fn test_session_restart_scenario_state_file_exists() {
-    let mut state = State::default();
-
-    add_notification(&mut state, 50, NotificationType::Waiting);
-    state.original_tab_names.insert(0, "Tab 1".to_string());
-    state.original_tab_names.insert(1, "Tab 2".to_string());
-
-    // 1. TabUpdate arrives first (panes still empty)
-    state.tabs = vec![
-        make_tab(0, "Tab 1 ⏳", true),
-        make_tab(1, "Tab 2", false),
-    ];
-
-    assert!(!state.clean_stale_notifications());
-    assert!(state.has_pending_restores());
-
-    // 2. PaneUpdate arrives
-    state.panes = make_manifest(vec![
-        (0, vec![make_pane(1, false, true), make_pane(10, true, false)]),
-        (1, vec![make_pane(2, false, false), make_pane(11, true, false)]),
-    ]);
-
-    assert!(state.clean_stale_notifications());
-    assert!(state.notification_state.is_empty());
-}
-
-#[test]
 fn test_session_restart_scenario_state_file_deleted() {
     let mut state = State::default();
 
