@@ -270,7 +270,7 @@ impl ZellijPlugin for State {
 
         self.config = NotificationConfig::from_configuration(&configuration);
 
-        eprintln!("zellij-attention: loaded\n");
+        eprintln!("zellij-attention: v{} loaded\n", env!("CARGO_PKG_VERSION"));
     }
 
     fn update(&mut self, event: Event) -> bool {
