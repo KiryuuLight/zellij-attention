@@ -20,6 +20,9 @@ pub struct State {
     pub(crate) original_tab_names: HashMap<usize, String>,
     pub(crate) config: NotificationConfig,
     updating_tabs: bool,
+    /// Tab positions where we've issued a rename to strip stale icons.
+    /// Prevents re-stripping on the bounced TabUpdate before Zellij catches up.
+    pub(crate) pending_strips: HashSet<usize>,
 }
 
 impl State {
@@ -103,6 +106,9 @@ impl State {
             }
             if self.original_tab_names.contains_key(&tab.position) {
                 continue; // will be handled by restore logic
+            }
+            if self.pending_strips.contains(&tab.position) {
+                continue; // already issued a strip, waiting for Zellij to catch up
             }
             if self.tab_name_has_icon(&tab.name) {
                 return true;
@@ -227,9 +233,18 @@ impl State {
         // but the plugin's state was lost or pane IDs changed.
         for tab in &self.tabs {
             if notified_positions.contains(&tab.position) {
+                self.pending_strips.remove(&tab.position);
                 continue;
             }
             if self.original_tab_names.contains_key(&tab.position) {
+                self.pending_strips.remove(&tab.position);
+                continue;
+            }
+            if self.pending_strips.contains(&tab.position) {
+                if !self.tab_name_has_icon(&tab.name) {
+                    // Zellij caught up, name is clean now
+                    self.pending_strips.remove(&tab.position);
+                }
                 continue;
             }
             if self.tab_name_has_icon(&tab.name) {
@@ -238,6 +253,7 @@ impl State {
                     "zellij-attention: Stripping stale icon from tab pos={} '{}' -> '{}'",
                     tab.position, tab.name, clean_name
                 );
+                self.pending_strips.insert(tab.position);
                 rename_tab((tab.position + 1) as u32, &clean_name);
             }
         }
