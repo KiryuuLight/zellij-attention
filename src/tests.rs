@@ -162,3 +162,33 @@ fn test_check_and_clear_focus() {
     assert!(state.check_and_clear_focus());
     assert!(state.notification_state.is_empty());
 }
+
+#[test]
+fn test_check_and_clear_focus_clears_completed_on_active_tab() {
+    let mut state = State::default();
+    // Pane 5 is focused, pane 6 is not focused but on the same active tab
+    state.tabs = vec![make_tab(0, "Tab 1", true)];
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(5, false, true), make_pane(6, false, false)]),
+    ]);
+    add_notification(&mut state, 6, NotificationType::Completed);
+
+    // Even though pane 6 is not focused, its Completed notification should
+    // be cleared because the user is on the same tab
+    assert!(state.check_and_clear_focus());
+    assert!(state.notification_state.is_empty());
+}
+
+#[test]
+fn test_check_and_clear_focus_keeps_waiting_on_unfocused_pane() {
+    let mut state = State::default();
+    state.tabs = vec![make_tab(0, "Tab 1", true)];
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(5, false, true), make_pane(6, false, false)]),
+    ]);
+    add_notification(&mut state, 6, NotificationType::Waiting);
+
+    // Waiting notification on unfocused pane should NOT be cleared
+    assert!(!state.check_and_clear_focus());
+    assert!(!state.notification_state.is_empty());
+}

@@ -6,7 +6,7 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use zellij_tile::prelude::*;
-use zellij_tile::shim::{rename_tab, unblock_cli_pipe_input};
+use zellij_tile::shim::{rename_tab, set_timeout, unblock_cli_pipe_input};
 
 use crate::config::NotificationConfig;
 use crate::state::NotificationType;
@@ -23,34 +23,65 @@ pub struct State {
     /// Tab positions where we've issued a rename to strip stale icons.
     /// Prevents re-stripping on the bounced TabUpdate before Zellij catches up.
     pub(crate) pending_strips: HashSet<usize>,
+    /// Whether a focus-check timer is currently scheduled.
+    timer_active: bool,
 }
 
 impl State {
-    fn determine_focused_pane(&self) -> Option<u32> {
-        let active_tab = self.tabs.iter().find(|t| t.active)?;
-        let panes = self.panes.panes.get(&active_tab.position)?;
-        let focused = panes.iter().find(|p| {
+    /// Checks if the active tab has panes with notifications and clears them.
+    /// Clears all notification types for the specifically focused pane, and
+    /// clears Completed notifications for all panes in the active tab (since
+    /// being on the tab means the user has noticed the completion).
+    /// Returns true if any notification was cleared.
+    pub(crate) fn check_and_clear_focus(&mut self) -> bool {
+        let active_tab = match self.tabs.iter().find(|t| t.active) {
+            Some(t) => t,
+            None => return false,
+        };
+        let panes = match self.panes.panes.get(&active_tab.position) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let mut cleared = false;
+
+        // Clear all notifications for the specifically focused pane
+        if let Some(focused) = panes.iter().find(|p| {
             !p.is_plugin
                 && p.is_focused
                 && (p.is_floating == active_tab.are_floating_panes_visible)
-        })?;
-        Some(focused.id)
-    }
-
-    /// Checks if focused pane has notifications and clears them.
-    /// Returns true if any notification was cleared.
-    pub(crate) fn check_and_clear_focus(&mut self) -> bool {
-        if let Some(focused_pane_id) = self.determine_focused_pane() {
-            if self.notification_state.remove(&focused_pane_id).is_some() {
+        }) {
+            if self.notification_state.remove(&focused.id).is_some() {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "zellij-attention: Cleared notifications for focused pane {}",
-                    focused_pane_id
+                    focused.id
                 );
-                return true;
+                cleared = true;
             }
         }
-        false
+
+        // Also clear Completed notifications for all panes in the active tab.
+        // Being on the tab means the user has noticed the completion — this is
+        // more robust than relying on precise pane-level focus detection, which
+        // can break after detach/reattach.
+        for pane in panes.iter().filter(|p| !p.is_plugin) {
+            if let Some(notifications) = self.notification_state.get_mut(&pane.id) {
+                if notifications.remove(&NotificationType::Completed) {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "zellij-attention: Cleared Completed for pane {} (active tab)",
+                        pane.id
+                    );
+                    cleared = true;
+                }
+                if notifications.is_empty() {
+                    self.notification_state.remove(&pane.id);
+                }
+            }
+        }
+
+        cleared
     }
 
     /// Removes notification entries for pane IDs that no longer exist.
@@ -159,6 +190,16 @@ impl State {
             Some(NotificationType::Completed)
         } else {
             None
+        }
+    }
+
+    /// Schedule a focus-check timer if there are active notifications and
+    /// no timer is already pending. This acts as a fallback for when
+    /// TabUpdate/PaneUpdate events stop being delivered (e.g. after detach/reattach).
+    fn ensure_timer(&mut self) {
+        if !self.timer_active && !self.notification_state.is_empty() {
+            set_timeout(1.0);
+            self.timer_active = true;
         }
     }
 
@@ -283,6 +324,7 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::TabUpdate,
             EventType::PaneUpdate,
+            EventType::Timer,
         ]);
 
         self.config = NotificationConfig::from_configuration(&configuration);
@@ -320,6 +362,24 @@ impl ZellijPlugin for State {
                 {
                     self.update_tab_names();
                 }
+                self.ensure_timer();
+                false
+            }
+            Event::Timer(_) => {
+                self.timer_active = false;
+                // Re-subscribe to TabUpdate/PaneUpdate — after detach/reattach,
+                // event delivery may stop. Re-subscribing nudges Zellij to
+                // send fresh state.
+                subscribe(&[EventType::TabUpdate, EventType::PaneUpdate]);
+                let focus_cleared = self.check_and_clear_focus();
+                let stale_cleaned = self.clean_stale_notifications();
+                if focus_cleared || stale_cleaned || self.has_pending_restores()
+                    || self.has_stale_icons()
+                {
+                    self.update_tab_names();
+                }
+                // Keep polling while there are active notifications
+                self.ensure_timer();
                 false
             }
             _ => false,
@@ -408,7 +468,15 @@ impl ZellijPlugin for State {
             }
         }
 
+        // If the notified pane is already focused, clear immediately — no point
+        // showing an icon for something the user is already looking at.
+        self.check_and_clear_focus();
+
         self.update_tab_names();
+
+        // Start polling timer in case TabUpdate/PaneUpdate events stop
+        // being delivered (e.g. after detach/reattach).
+        self.ensure_timer();
 
         false
     }
