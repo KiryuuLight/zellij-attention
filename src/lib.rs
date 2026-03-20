@@ -37,20 +37,60 @@ impl State {
         Some(focused.id)
     }
 
-    /// Checks if focused pane has notifications and clears them.
+    /// Checks if the active tab has panes with notifications and clears them.
+    /// Clears all notification types for the specifically focused pane, and
+    /// clears Completed notifications for all panes in the active tab (since
+    /// being on the tab means the user has noticed the completion).
     /// Returns true if any notification was cleared.
     pub(crate) fn check_and_clear_focus(&mut self) -> bool {
-        if let Some(focused_pane_id) = self.determine_focused_pane() {
-            if self.notification_state.remove(&focused_pane_id).is_some() {
+        let active_tab = match self.tabs.iter().find(|t| t.active) {
+            Some(t) => t,
+            None => return false,
+        };
+        let panes = match self.panes.panes.get(&active_tab.position) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let mut cleared = false;
+
+        // Clear all notifications for the specifically focused pane
+        if let Some(focused) = panes.iter().find(|p| {
+            !p.is_plugin
+                && p.is_focused
+                && (p.is_floating == active_tab.are_floating_panes_visible)
+        }) {
+            if self.notification_state.remove(&focused.id).is_some() {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "zellij-attention: Cleared notifications for focused pane {}",
-                    focused_pane_id
+                    focused.id
                 );
-                return true;
+                cleared = true;
             }
         }
-        false
+
+        // Also clear Completed notifications for all panes in the active tab.
+        // Being on the tab means the user has noticed the completion — this is
+        // more robust than relying on precise pane-level focus detection, which
+        // can break after detach/reattach.
+        for pane in panes.iter().filter(|p| !p.is_plugin) {
+            if let Some(notifications) = self.notification_state.get_mut(&pane.id) {
+                if notifications.remove(&NotificationType::Completed) {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "zellij-attention: Cleared Completed for pane {} (active tab)",
+                        pane.id
+                    );
+                    cleared = true;
+                }
+                if notifications.is_empty() {
+                    self.notification_state.remove(&pane.id);
+                }
+            }
+        }
+
+        cleared
     }
 
     /// Removes notification entries for pane IDs that no longer exist.
@@ -407,6 +447,10 @@ impl ZellijPlugin for State {
                 }
             }
         }
+
+        // If the notified pane is already focused, clear immediately — no point
+        // showing an icon for something the user is already looking at.
+        self.check_and_clear_focus();
 
         self.update_tab_names();
 
