@@ -44,10 +44,12 @@ impl State {
     /// preventing false clears during tab reorders when pane/tab data is out of sync.
     /// Returns true if any notification was cleared.
     pub(crate) fn check_and_clear_focus(&mut self) -> bool {
-        let active_tab = self.tabs.iter().find(|t| t.active);
-        if let Some(active_tab) = active_tab {
-            if !self.tab_name_has_icon(&active_tab.name) {
-                return false;
+        if self.config.enabled {
+            let active_tab = self.tabs.iter().find(|t| t.active);
+            if let Some(active_tab) = active_tab {
+                if !self.tab_name_has_icon(&active_tab.name) {
+                    return false;
+                }
             }
         }
         if let Some(focused_pane_id) = self.determine_focused_pane() {
@@ -126,7 +128,12 @@ impl State {
         for tab in &self.tabs {
             if let Some(panes) = self.panes.panes.get(&tab.position) {
                 if panes.iter().any(|p| !p.is_plugin && p.id == pane_id) {
-                    return Some(self.strip_icons(&tab.name));
+                    let name = if tab.name.is_empty() {
+                        format!("Tab #{}", tab.position + 1)
+                    } else {
+                        self.strip_icons(&tab.name)
+                    };
+                    return Some(name);
                 }
             }
         }
@@ -182,6 +189,29 @@ impl State {
         }
         self.updating_tabs = true;
 
+        // Fast path: no notifications and no pending renames — only check for stale icons
+        if self.notification_state.is_empty() && self.pending_renames.is_empty() {
+            for tab in &self.tabs {
+                if self.tab_name_has_icon(&tab.name)
+                    && !self.notified_tab_names.values().any(|name| {
+                        let base = self.strip_icons(&tab.name);
+                        name == &base
+                    })
+                {
+                    let base_name = self.strip_icons(&tab.name);
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "zellij-attention: Stripping stale icon from tab pos={} '{}' -> '{}'",
+                        tab.position, tab.name, base_name
+                    );
+                    self.pending_renames.insert(tab.position);
+                    rename_tab((tab.position + 1) as u32, &base_name);
+                }
+            }
+            self.updating_tabs = false;
+            return;
+        }
+
         for tab in &self.tabs {
             let base_name = if tab.name.is_empty() {
                 format!("Tab #{}", tab.position + 1)
@@ -219,6 +249,7 @@ impl State {
                     continue;
                 }
                 // Truly stale icon — strip it
+                #[cfg(debug_assertions)]
                 eprintln!(
                     "zellij-attention: Stripping stale icon from tab pos={} '{}' -> '{}'",
                     tab.position, tab.name, base_name
