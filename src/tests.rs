@@ -60,35 +60,6 @@ fn test_tab_name_has_icon() {
 }
 
 #[test]
-fn test_has_stale_icons_detects_orphaned_icons() {
-    let mut state = State::default();
-    state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
-    state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
-
-    assert!(state.has_stale_icons());
-}
-
-#[test]
-fn test_has_stale_icons_ignores_active_notifications() {
-    let mut state = State::default();
-    state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
-    state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
-    add_notification(&mut state, 1, NotificationType::Waiting);
-
-    assert!(!state.has_stale_icons());
-}
-
-#[test]
-fn test_has_stale_icons_ignores_pending_restores() {
-    let mut state = State::default();
-    state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
-    state.panes = make_manifest(vec![(0, vec![make_pane(1, false, true)])]);
-    state.original_tab_names.insert(0, "Tab 1".to_string());
-
-    assert!(!state.has_stale_icons());
-}
-
-#[test]
 fn test_clean_stale_notifications_removes_old_pane_ids() {
     let mut state = State::default();
     add_notification(&mut state, 99, NotificationType::Waiting);
@@ -105,32 +76,6 @@ fn test_clean_stale_skipped_when_panes_empty() {
 
     assert!(!state.clean_stale_notifications());
     assert!(!state.notification_state.is_empty());
-}
-
-#[test]
-fn test_stale_icons_after_restart_with_no_saved_state() {
-    let mut state = State::default();
-
-    state.tabs = vec![
-        make_tab(0, "Tab 1 ⏳", true),
-        make_tab(1, "Tab 2 ✅", false),
-    ];
-    state.panes = make_manifest(vec![
-        (0, vec![make_pane(1, false, true)]),
-        (1, vec![make_pane(2, false, false)]),
-    ]);
-
-    assert!(!state.has_pending_restores());
-    assert!(state.has_stale_icons());
-}
-
-#[test]
-fn test_original_tab_names_not_wiped_when_tabs_empty() {
-    let mut state = State::default();
-    state.original_tab_names.insert(0, "Tab 1".to_string());
-
-    assert!(state.tabs.is_empty());
-    assert!(state.original_tab_names.contains_key(&0));
 }
 
 #[test]
@@ -153,7 +98,8 @@ fn test_get_tab_notification_state_skips_plugin_panes() {
 #[test]
 fn test_check_and_clear_focus() {
     let mut state = State::default();
-    state.tabs = vec![make_tab(0, "Tab 1", true)];
+    // Tab name must have icon for focus-clear to proceed (reorder safety)
+    state.tabs = vec![make_tab(0, "Tab 1 ⏳", true)];
     state.panes = make_manifest(vec![
         (0, vec![make_pane(5, false, true)]),
     ]);
@@ -161,4 +107,85 @@ fn test_check_and_clear_focus() {
 
     assert!(state.check_and_clear_focus());
     assert!(state.notification_state.is_empty());
+}
+
+#[test]
+fn test_check_and_clear_focus_skips_without_icon() {
+    let mut state = State::default();
+    // Tab name has no icon — don't clear (protects against reorder race)
+    state.tabs = vec![make_tab(0, "Tab 1", true)];
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(5, false, true)]),
+    ]);
+    add_notification(&mut state, 5, NotificationType::Waiting);
+
+    assert!(!state.check_and_clear_focus());
+    assert!(!state.notification_state.is_empty());
+}
+
+#[test]
+fn test_tab_reorder_skips_mismatched_tab_name() {
+    let mut state = State::default();
+
+    // Beta at pos 1 has notification, recorded as tab "Beta"
+    state.tabs = vec![
+        make_tab(0, "Alpha", false),
+        make_tab(1, "Beta ⏳", false),
+        make_tab(2, "Gamma", true),
+    ];
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(1, false, false)]),
+        (1, vec![make_pane(2, false, false)]),
+        (2, vec![make_pane(3, false, true)]),
+    ]);
+    add_notification(&mut state, 2, NotificationType::Waiting);
+    state.notified_tab_names.insert(2, "Beta".to_string());
+
+    // After reorder: pane 2 is now at pos 2 but tab at pos 2 is "Tab #4"
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(1, false, false)]),
+        (1, vec![make_pane(4, false, false)]),
+        (2, vec![make_pane(2, false, false)]),  // Beta's pane at Tab #4's position
+        (3, vec![make_pane(3, false, true)]),
+    ]);
+    state.tabs = vec![
+        make_tab(0, "Alpha", false),
+        make_tab(1, "Beta ⏳", false),  // stale tab data
+        make_tab(2, "Tab #4", true),
+        make_tab(3, "Gamma", false),
+    ];
+
+    // Pane 2 is at pos 2 but tab is "Tab #4", not "Beta" — should skip
+    assert_eq!(state.get_tab_notification_state(2), None);
+
+    // After data stabilizes: pane 2 at pos 2, tab "Beta" at pos 2
+    state.tabs = vec![
+        make_tab(0, "Alpha", false),
+        make_tab(1, "Tab #4", true),
+        make_tab(2, "Beta ⏳", false),
+        make_tab(3, "Gamma", false),
+    ];
+
+    // Now tab name matches — notification should be found
+    assert_eq!(state.get_tab_notification_state(2), Some(NotificationType::Waiting));
+}
+
+#[test]
+fn test_stale_icon_not_stripped_when_notification_expects_tab() {
+    let mut state = State::default();
+
+    // "Beta ⏳" at pos 1, notification expects tab "Beta"
+    state.tabs = vec![
+        make_tab(0, "Alpha", false),
+        make_tab(1, "Beta ⏳", false),
+    ];
+    state.panes = make_manifest(vec![
+        (0, vec![make_pane(1, false, false)]),
+        (1, vec![make_pane(2, false, false)]),
+    ]);
+    state.notified_tab_names.insert(2, "Beta".to_string());
+
+    // "Beta ⏳" has icon but notification expects "Beta" — don't strip
+    let base = state.strip_icons("Beta ⏳");
+    assert!(state.notified_tab_names.values().any(|name| name == &base));
 }

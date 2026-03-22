@@ -17,7 +17,7 @@ Zellij WASM plugin that adds notification icons to tab names when panes need att
 - **Single global plugin instance** via `load_plugins` in `config.kdl` (no visible pane)
 - **Notification state:** `HashMap<u32, HashSet<NotificationType>>` — pane_id → notification set. Latest event **replaces** (no stacking per pane)
 - **Tab-level priority:** If any pane in a tab has Waiting, tab shows ⏳. Only shows ✓ if no Waiting exists.
-- **Original tab names** cached before renaming, restored on clear. Icons stripped defensively when caching to prevent accumulation from stale `tab.name`.
+- **No position-keyed caches** — original tab names derived via `strip_icons()` at rename time, making tab reordering safe
 - **`rename_tab()` is 1-indexed** — Zellij API quirk, always pass `position + 1`
 - **`updating_tabs` flag** prevents re-entrancy from `rename_tab()` → `TabUpdate` → `update_tab_names()` loop
 
