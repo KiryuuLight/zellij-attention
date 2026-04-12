@@ -6,7 +6,7 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use zellij_tile::prelude::*;
-use zellij_tile::shim::{rename_tab, unblock_cli_pipe_input};
+use zellij_tile::shim::{list_clients, rename_tab, unblock_cli_pipe_input};
 
 use crate::config::NotificationConfig;
 use crate::state::NotificationType;
@@ -14,6 +14,11 @@ use crate::state::NotificationType;
 #[derive(Default)]
 pub struct State {
     permissions_granted: bool,
+    /// Whether this plugin instance has an active client.
+    /// Becomes false when the owning client detaches, leaving an orphaned instance.
+    /// Orphaned instances must not rename tabs or process notifications to avoid
+    /// conflicting with the live instance (causes flickering).
+    is_active: bool,
     pub(crate) tabs: Vec<TabInfo>,
     pub(crate) panes: PaneManifest,
     pub(crate) notification_state: HashMap<u32, HashSet<NotificationType>>,
@@ -282,8 +287,10 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::TabUpdate,
             EventType::PaneUpdate,
+            EventType::ListClients,
         ]);
 
+        self.is_active = true;
         self.config = NotificationConfig::from_configuration(&configuration);
 
         eprintln!("zellij-attention: v{} loaded\n", env!("CARGO_PKG_VERSION"));
@@ -295,12 +302,28 @@ impl ZellijPlugin for State {
                 self.permissions_granted = status == PermissionStatus::Granted;
                 set_selectable(false);
 
+                // Check if we have an active client (detects orphaned instances)
+                list_clients();
+
                 // Strip any stale icons on startup
                 self.update_tab_names();
                 true
             }
+            Event::ListClients(clients) => {
+                let was_active = self.is_active;
+                self.is_active = clients.iter().any(|c| c.is_current_client);
+                if was_active && !self.is_active {
+                    eprintln!("zellij-attention: no active client, going dormant");
+                }
+                false
+            }
             Event::TabUpdate(tab_info) => {
                 self.tabs = tab_info;
+                // Periodically re-check client liveness
+                list_clients();
+                if !self.is_active {
+                    return false;
+                }
                 self.check_and_clear_focus();
                 self.clean_stale_notifications();
                 self.update_tab_names();
@@ -308,6 +331,9 @@ impl ZellijPlugin for State {
             }
             Event::PaneUpdate(pane_manifest) => {
                 self.panes = pane_manifest;
+                if !self.is_active {
+                    return false;
+                }
                 self.check_and_clear_focus();
                 self.clean_stale_notifications();
                 self.update_tab_names();
@@ -325,6 +351,12 @@ impl ZellijPlugin for State {
             "zellij-attention: pipe name={} payload={:?}\n",
             pipe_message.name, pipe_message.payload
         );
+
+        // Orphaned instance — unblock pipe and skip processing
+        if !self.is_active {
+            unblock_cli_pipe_input(&pipe_message.name);
+            return false;
+        }
 
         let message = if pipe_message.name.starts_with("zellij-attention::") {
             pipe_message.name.clone()
