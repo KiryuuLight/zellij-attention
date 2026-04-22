@@ -71,7 +71,7 @@ Automate notifications with [Claude Code hooks](https://docs.anthropic.com/en/do
         "hooks": [
           {
             "type": "command",
-            "command": "zellij pipe --name \"zellij-attention::waiting::$ZELLIJ_PANE_ID\""
+            "command": "bash -c '[[ -v ZELLIJ_PANE_ID ]] && zellij pipe --name \"zellij-attention::waiting::$ZELLIJ_PANE_ID\" || true'"
           }
         ]
       }
@@ -81,7 +81,7 @@ Automate notifications with [Claude Code hooks](https://docs.anthropic.com/en/do
         "hooks": [
           {
             "type": "command",
-            "command": "zellij pipe --name \"zellij-attention::completed::$ZELLIJ_PANE_ID\""
+            "command": "bash -c '[[ -v ZELLIJ_PANE_ID ]] && zellij pipe --name \"zellij-attention::completed::$ZELLIJ_PANE_ID\" || true'"
           }
         ]
       }
